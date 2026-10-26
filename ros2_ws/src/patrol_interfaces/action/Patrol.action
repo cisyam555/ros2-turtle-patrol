@@ -1,0 +1,10 @@
+# Goal:要求依次经过的航点
+geometry_msgs/Point[] waypoints
+---
+#Result: 巡逻结束后的结果
+bool completed
+int32 visited_count
+---
+# Feedback:i执行期间的进度
+int32 current_waypoint
+float64 remaining_distance

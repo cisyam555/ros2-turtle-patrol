@@ -1,0 +1,19 @@
+# ROS 2 generated output
+**/build/
+**/install/
+**/log/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local editor settings and data
+.vscode/
+.idea/
+.env
+.env.*
+bags/
+*.db3
+*.mcap
