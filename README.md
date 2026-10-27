@@ -89,6 +89,21 @@ ros2 action send_goal /patrol patrol_interfaces/action/Patrol "{waypoints: [{x: 
 
 2026-10-26 在学习容器中完成两包构建、接口显示和人工端到端验证：接收任务、读取位姿、角度计算、返回结果、观察零速度消息。模板测试文件随建包工具生成，未据此宣称完整自动化测试已通过。
 
+## 重复启动排查（后续开发记录）
+
+关闭终端窗口不保证 `docker exec` 启动的容器内程序已经结束。停止服务端时先在其终端按 Ctrl+C，等命令提示符返回，再关闭窗口。
+
+服务端启动入口现已加入 Linux 文件锁：在同一容器、同一用户、同一 `ROS_DOMAIN_ID` 下，第二个本项目服务端会提示“巡逻服务端已经在运行”并退出。进程退出后操作系统自动释放锁，不需要删除锁文件。此限制用于当前单海龟项目；它不阻止其他容器、其他用户或未使用该入口的程序启动同名 Action。
+
+在容器内检查实际进程和 ROS 服务数量：
+
+```bash
+ps -eo pid,ppid,args | grep '[p]atrol_server'
+ros2 action info /patrol
+```
+
+`ros2 run` 启动器和实际 Python 节点通常各占一行，因此不能只靠进程行数判断实例数量。测试前应确认 `Action servers: 1`。
+
 ## 许可证
 
 Apache-2.0，见根目录 `LICENSE`。

@@ -1,7 +1,12 @@
 from rclpy.task import Future
+import fcntl
+import logging
 import math
+import os
+import tempfile
 import rclpy
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 from rclpy.action import ActionServer
 from patrol_interfaces.action import Patrol
 from turtlesim.msg import Pose
@@ -21,6 +26,8 @@ class PatrolServer(Node):
         self.target_point = None      #保存目标的 x、y，前进时需要不断计算剩余距离
         self.motion_state = 'idle'    #'IDLE'表示空闲，暂时没有运动任务
                                       #motion_state记录当前在等待、转向还是前进
+        self.active_goal_handle = None
+        self.current_waypoint = 0
 
         self.cmd_vel_publisher = self.create_publisher(
             Twist,
@@ -69,6 +76,12 @@ class PatrolServer(Node):
         dx = self.target_point.x - self.pose.x
         dy = self.target_point.y - self.pose.y
         distance = math.hypot(dx, dy)
+
+        if self.active_goal_handle is not None:
+            feedback = Patrol.Feedback()
+            feedback.current_waypoint = self.current_waypoint
+            feedback.remaining_distance = distance
+            self.active_goal_handle.publish_feedback(feedback)
 
         target_angle = math.atan2(dy, dx)
         angle_error = target_angle - self.pose.theta
@@ -149,6 +162,9 @@ class PatrolServer(Node):
 
         try:
             for index, target in enumerate(waypoints):
+                self.active_goal_handle = goal_handle
+                self.current_waypoint = index + 1
+
                 self.motion_future = Future()
                 self.target_point = target
                 self.motion_state = 'turn'
@@ -171,6 +187,9 @@ class PatrolServer(Node):
             self.get_logger().info('全部航点巡逻完成')
             return result
         finally:
+            self.active_goal_handle = None
+            self.current_waypoint = 0
+
             self.target_point = None
             self.motion_state = 'idle'
             self.motion_future = None
@@ -178,7 +197,29 @@ class PatrolServer(Node):
             
 
 def main(args=None):
-    rclpy.init(args=args)
+    # Linux 进程锁：同一用户、同一 ROS 通信域只运行一份本服务端。
+    domain = int(os.environ.get('ROS_DOMAIN_ID', '0'))
+    lock_path = os.path.join(
+        tempfile.gettempdir(),
+        f'patrol_server_{os.getuid()}_domain_{domain}.lock',
+    )
+    with open(lock_path, 'a') as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logging.getLogger('patrol_server').error(
+                '巡逻服务端已经在运行，本次不重复启动。'
+                '请在原服务端终端按 Ctrl+C 后重试。'
+            )
+            return 1
+
+        # 文件句柄保持打开，进程退出时操作系统自动释放锁。
+        return run_node(args)
+
+
+def run_node(args=None):
+    # Ctrl+C 先交给 Python 清理，避免 ROS 提前关闭后停车消息无法发布。
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = PatrolServer()
 
     try:
