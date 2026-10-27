@@ -129,45 +129,52 @@ class PatrolServer(Node):
             goal_handle.abort()
             return result
 
-        if len(waypoints) != 1:
-            self.get_logger().warn('当前阶段只支持一个航点')
+        if len(waypoints) == 0:
+            self.get_logger().warn('航点列表不能为空')
             goal_handle.abort()
             return result
 
-        target = waypoints[0]
-
-        if not (
-            math.isfinite(target.x)
-            and math.isfinite(target.y)
-            and 0.5 <= target.x <= 10.5
-            and 0.5 <= target.y <= 10.5
-        ):
-            self.get_logger().warn('目标无效，请将 x、y 设在 0.5～10.5 内')
-            goal_handle.abort()
-            return result
-
-        self.motion_future = Future()
-        self.target_point = target
-        self.motion_state = 'turn'
-
-        self.get_logger().info(
-            f'开始前往航点：({target.x:.2f}, {target.y:.2f})'
-        )
+        for point in waypoints:
+            if not (
+                math.isfinite(point.x)
+                and math.isfinite(point.y)
+                and 0.5 <= point.x <= 10.5
+                and 0.5 <= point.y <= 10.5
+            ):
+                self.get_logger().warn(
+                    '航点无效，x、y 应在 0.5～10.5 内'
+                )
+                goal_handle.abort()
+                return result
 
         try:
-            await self.motion_future
+            for index, target in enumerate(waypoints):
+                self.motion_future = Future()
+                self.target_point = target
+                self.motion_state = 'turn'
+
+                self.get_logger().info(
+                    f'前往航点 {index + 1}/{len(waypoints)}：'
+                    f'({target.x:.2f}, {target.y:.2f})'
+                )
+
+                await self.motion_future
+
+                result.visited_count += 1
+
+                self.get_logger().info(
+                    f'已到达 {result.visited_count} 个航点'
+                )
 
             result.completed = True
-            result.visited_count = 1
             goal_handle.succeed()
-
-            self.get_logger().info('单航点任务完成')
+            self.get_logger().info('全部航点巡逻完成')
             return result
         finally:
             self.target_point = None
             self.motion_state = 'idle'
             self.motion_future = None
-            self.stop_turtle()
+            self.stop_turtle()          
             
 
 def main(args=None):
