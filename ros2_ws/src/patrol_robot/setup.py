@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'patrol_server = patrol_robot.patrol_server:main',
+            'patrol_client = patrol_robot.patrol_client:main',
         ],
     },
 )
