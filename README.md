@@ -1,57 +1,63 @@
 # ROS2 巡逻小车学习项目
 
-基于 ROS 2 Humble、Python 和 turtlesim 的独立巡逻项目，按小步骤实现并验证。
+基于 ROS 2 Humble、Python 和 turtlesim 的独立巡逻系统。当前版本：**客户端自动巡逻、超时与 Ctrl+C 取消、学习容器会话清理**。
 
-## 第一版：基础通信与停车验证
+## 已实现
 
-已完成：
+- 独立的 `patrol_interfaces` 接口包和 `patrol_robot` 节点包。
+- 自定义 `Patrol.action`：航点列表、当前航点与剩余距离反馈、完成状态与实际到达数量。
+- 服务端订阅 `/turtle1/pose`，通过 `/turtle1/cmd_vel` 控制海龟。
+- 多航点顺序导航：转向对准、直行、持续修正方向、到达后停车。
+- 角度差归一化，航点非空及坐标范围检查；坐标 x、y 须有限且在 0.5～10.5 内。
+- Action 实时反馈；取消时先发布零速度，再返回 `CANCELED`，未到达的航点不计数。
+- 客户端自动发送三个默认航点，打印进度和最终结果。
+- 客户端在服务端接受任务后 10 秒请求取消；按 Ctrl+C 也会请求取消并等待结果再退出。
+- 同一 Linux 用户和 ROS 通信域内，服务端使用文件锁防止重复启动。
+- 学习容器入口增加会话清理：关闭终端后停止本会话的子进程并回收退出记录。
 
-- 自定义 `Patrol.action`：航点列表、执行结果和进度反馈的数据格式。
-- `/patrol` Action 服务端接收航点并返回结果。
-- 订阅 `/turtle1/pose`，持续保存最新位置。
-- 计算到第一个航点的距离、目标方向和归一化角度差；当前日志输出目标方向及角度差。
-- 向 `/turtle1/cmd_vel` 发布零速度，验证停车消息发送。
-
-当前版本只做通信和计算验证，不执行巡逻。收到非空任务且已取得位置后，发送零速度并主动以 `ABORTED` 结束，返回 `completed: false`、`visited_count: 0`。这不是完整巡逻任务成功的标志。
-
-后续实现：闭环转向、直行与到达判断、多航点、进度反馈、任务取消、独立客户端、参数、Launch 和 rosbag 复盘。
+当前是**取消任务**，未实现暂停后继续。速度、默认路线和超时时间目前仍写在代码里；尚未实现参数配置、Launch 一键启动和本项目完整巡逻 bag 验收。
 
 ## 项目结构
 
 ```text
 ros2_ws/src/
-├── patrol_interfaces/          自定义 Action 接口包
-│   └── action/Patrol.action
-└── patrol_robot/               Python 节点包
-    └── patrol_robot/patrol_server.py
+├── patrol_interfaces/action/Patrol.action
+└── patrol_robot/
+    ├── setup.py
+    └── patrol_robot/
+        ├── patrol_server.py
+        └── patrol_client.py
+tools/learning-container/       学习容器入口及会话清理脚本备份
 ```
 
 ## 环境与构建
 
-需要已配置好的 ROS 2 Humble 环境，以及 `colcon`、`ament_cmake`、`ament_python`、`rclpy`、`rosidl_default_generators`、`geometry_msgs`、`action_msgs` 和 `turtlesim`。本仓库不包含原课程容器和容器进入脚本；也可以在原生 Humble 环境运行。
+需要 Linux、ROS 2 Humble、Python 3、colcon，以及 `ament_cmake`、`ament_python`、`rclpy`、`rosidl_default_generators`、`geometry_msgs`、`action_msgs` 和 `turtlesim`。可使用原生 Humble 环境；仓库不提供预构建的课程 Docker 镜像。
 
-在仓库根目录打开终端，执行：
+在仓库根目录执行：
 
 ```bash
 source /opt/ros/humble/setup.bash
 cd ros2_ws
 colcon build --symlink-install --packages-up-to patrol_robot
 source install/setup.bash
-ros2 interface show patrol_interfaces/action/Patrol
+ros2 pkg executables patrol_robot
 ```
 
-## 运行与验证
+应包含 `patrol_server` 和 `patrol_client` 两个入口。
 
-每个终端分别加载环境。下文 `/absolute/path/to/patrol_project` 需替换为本机实际仓库路径。在当前学习容器中是 `/learning/patrol_project`。
+## 三个终端运行
 
-终端 A：启动海龟，保持运行。
+所有终端使用同一 ROS 通信域，只启动一个模拟器和一个服务端。下面把 `/absolute/path/to/patrol_project` 替换为仓库路径；当前学习容器里为 `/learning/patrol_project`。
+
+终端1：海龟模拟器，保持运行。
 
 ```bash
 source /opt/ros/humble/setup.bash
 ros2 run turtlesim turtlesim_node
 ```
 
-终端 B：启动服务端，保持运行。
+终端2：巡逻服务端，保持运行。
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -59,51 +65,65 @@ source /absolute/path/to/patrol_project/ros2_ws/install/setup.bash
 ros2 run patrol_robot patrol_server
 ```
 
-终端 C：先监听速度消息，保持运行。启动和收到位姿的日志应已在终端 B 出现。
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 topic echo /turtle1/cmd_vel
-```
-
-终端 D：发送任务。
+终端3：巡逻客户端。
 
 ```bash
 source /opt/ros/humble/setup.bash
 source /absolute/path/to/patrol_project/ros2_ws/install/setup.bash
-ros2 action send_goal /patrol patrol_interfaces/action/Patrol "{waypoints: [{x: 2.0, y: 2.0, z: 0.0}]}"
+ros2 run patrol_robot patrol_client
 ```
 
-所有终端须处于同一个 ROS 通信域。请只运行一个模拟器和一个本项目服务端，避免其他控制程序同时发布速度。
+客户端自动发送 `(2, 2) → (8, 2) → (8, 8)`。当前固定 10 秒超时，通常会在完整路线结束前取消，这是本阶段的测试行为。
 
-预期：
+### 超时取消验收
 
-- 海龟初始位姿约为 `(5.54, 5.54, 0)` 时，服务端打印目标方向和转动角度约 `-135°`。
-- 终端 C 收到各分量均为零的 `Twist` 消息。
-- 终端 D 收到 `completed: false`、`visited_count: 0`、`ABORTED`。
-- 海龟保持静止，当前版本不发送非零速度。
+不按键，等待 10 秒：客户端应请求取消，服务端停车，最终打印状态码 `5`（CANCELED）、`completed=False` 和实际已到达数量。客户端仍保持运行，可按 Ctrl+C 退出。
 
-空航点或尚未收到位置时，服务端也会中止测试任务并记录原因。初始代码尚未实现目标范围检查、取消处理或并发任务管理，不用于真实底盘。
+### Ctrl+C 取消验收
 
-## 已有验证
+重启客户端，在“服务端已接受任务”后 2～3 秒，在**终端3**按一次 Ctrl+C。客户端应请求取消，等待最终结果后返回命令提示符。海龟停止前进和转动，终端1、终端2继续运行。
 
-2026-10-26 在学习容器中完成两包构建、接口显示和人工端到端验证：接收任务、读取位姿、角度计算、返回结果、观察零速度消息。模板测试文件随建包工具生成，未据此宣称完整自动化测试已通过。
+若服务端失联，客户端最多等待接单回复 5 秒、任务结果 5 秒，超时后报告状态未确认；不能把客户端退出当作收到停车确认。
 
-## 重复启动排查（后续开发记录）
+### 完整巡逻验收
 
-关闭终端窗口不保证 `docker exec` 启动的容器内程序已经结束。停止服务端时先在其终端按 Ctrl+C，等命令提示符返回，再关闭窗口。
-
-服务端启动入口现已加入 Linux 文件锁：在同一容器、同一用户、同一 `ROS_DOMAIN_ID` 下，第二个本项目服务端会提示“巡逻服务端已经在运行”并退出。进程退出后操作系统自动释放锁，不需要删除锁文件。此限制用于当前单海龟项目；它不阻止其他容器、其他用户或未使用该入口的程序启动同名 Action。
-
-在容器内检查实际进程和 ROS 服务数量：
+如需绕过客户端固定的 10 秒超时，可在终端3使用命令行发送任务（不要同时运行客户端）：
 
 ```bash
-ps -eo pid,ppid,args | grep '[p]atrol_server'
-ros2 action info /patrol
+ros2 action send_goal /patrol patrol_interfaces/action/Patrol "{waypoints: [{x: 2.0, y: 2.0, z: 0.0}, {x: 8.0, y: 2.0, z: 0.0}, {x: 8.0, y: 8.0, z: 0.0}]}" --feedback
 ```
 
-`ros2 run` 启动器和实际 Python 节点通常各占一行，因此不能只靠进程行数判断实例数量。测试前应确认 `Action servers: 1`。
+预期最终状态为 `SUCCEEDED`（状态码 `4`）、`completed=True`、`visited_count=3`。
+
+## 重复节点与关闭终端
+
+`ros2 run` 启动器和实际 Python 节点通常各占一行，不能只按进程行数判断服务端数量。
+
+```bash
+ros2 action info /patrol
+ps -eo pid,ppid,args | grep -E '[p]atrol_server|[p]atrol_client|[t]urtlesim_node'
+```
+
+应只有一个 Action 服务端。文件锁只覆盖同一用户、同一通信域内通过本入口启动的服务端。
+
+学习容器的修复脚本见 [tools/learning-container](tools/learning-container/README.md)。新入口负责清理所属会话，旧的直接 docker-exec 会话不受管理。建议先 Ctrl+C，等提示符返回，再输入 `exit`。`<defunct>` 是已退出而未回收的记录，不是活跃节点；旧容器 PID 1 留下的记录可能需要一次容器重启才能清除。
+
+## 验证记录
+
+- 人工验证：海龟依次到达三个航点，客户端实时显示进度，返回 `SUCCEEDED`、完成数 3。
+- 人工验证：10 秒超时请求取消，返回 `CANCELED`、完成数 1。
+- 隔离 ROS 通信域集成验证：客户端收到 SIGINT 后请求取消，服务端返回 `CANCELED`、发布零速度并清理任务，客户端正常退出。
+- PTY 终端测试：客户端 Ctrl+C、服务端 Ctrl+C、直接关闭服务端终端后，均未留下节点或僵尸进程。
+- Python 导入/语法检查、Shell 语法检查通过。这些检查不代表完成了全部课程验收。
+
+## 尚未完成的三大项
+
+1. **参数配置**：线速度、角速度、默认航点及取消超时时间；客户端超时逻辑已有，但“通过参数指定超时”仍待实现。
+2. **Launch**：一条命令启动 turtlesim、服务端和客户端，并提供慢速/快速模式。
+3. **rosbag 项目验收**：录制完整巡逻的 `/turtle1/cmd_vel`、`/turtle1/pose`，检查 bag，停止原控制节点，从相同初始位姿回放并验证轨迹。
+
+多任务抢占、双龟巡逻、超时返航、轨迹对比属于可选挑战，不计入上述三项。
 
 ## 许可证
 
-Apache-2.0，见根目录 `LICENSE`。
+Apache-2.0，见 [LICENSE](LICENSE)。当前实现用于 turtlesim 学习，未完成真实底盘的安全控制与传感器异常处理。
