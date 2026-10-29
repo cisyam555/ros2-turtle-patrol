@@ -4,92 +4,15 @@
 
 当前里程碑：**巡逻系统与四项拓展功能完成版**。已实现六项基础功能和四项拓展，并完成主要或基本场景验证，包括双龟一键巡逻、超时返航、双任务抢占和两轮轨迹数值对比。代码面向 turtlesim，未适配真实机器人底盘。
 
-## 从新终端开始：完整演示启动命令
-
-本节对应作者现有的学习容器，可直接用于展示**已经实现的基础系统**。
-四个挑战加分项均已实现并完成主要或基本场景验证；复杂任务切换边界和完整自动化回归仍待补充。拓展演示命令见第13节。
-外部克隆仓库的使用者请按第5.2节准备原生 ROS2 环境；本仓库不包含课程镜像。
-
-### 演示终端A：进入容器、构建、快速巡逻
-
-在电脑上**新开一个主机终端**，执行：
-
-```bash
-cd '/home/cisyam/文档/ChatGPT/ROS2实战'
-bash ros2_learning.sh enter
-```
-
-看到 `[ROS2实战]` 后，在**同一个终端**继续：
-
-```bash
-source /opt/ros/humble/setup.bash
-cd /learning/patrol_project/ros2_ws
-colcon build --symlink-install --packages-up-to patrol_robot
-source install/setup.bash
-```
-
-先检查有没有以前的模拟器、服务端或客户端：
-
-```bash
-ps -eo pid,ppid,args | grep -E '[p]atrol_server|[p]atrol_client|[t]urtlesim_node'
-```
-
-没有输出，再启动。若有旧节点，先到原终端按 Ctrl+C，等提示符回来后再检查；不要再启动第二套。
-
-```bash
-ros2 launch patrol_robot patrol.launch.py mode:=fast
-```
-
-此终端保持运行，不输入其他命令。现场展示时说明：只执行一条 Launch 命令，就自动启动海龟、服务端和客户端；海龟依次经过 `(2,2) → (8,2) → (8,8)`；终端实时显示当前航点和剩余距离。
-
-最终应显示：
-
-```text
-任务结束：状态码=4，全部完成=True，已到达航点数=3
-```
-
-### 演示终端B：查看节点和运行参数
-
-另开一个**主机终端**，不要把这些命令输入正在运行 Launch 的终端A：
-
-```bash
-cd '/home/cisyam/文档/ChatGPT/ROS2实战'
-bash ros2_learning.sh enter
-```
-
-进入容器后，在终端B继续：
-
-```bash
-source /opt/ros/humble/setup.bash
-source /learning/patrol_project/ros2_ws/install/setup.bash
-ros2 node list
-ros2 action info /patrol
-ros2 param get /patrol_server linear_speed
-ros2 param get /patrol_server angular_speed
-```
-
-正常应有一个巡逻 Action 服务端，快速模式两项速度参数均为 `1.0`。
-
-### 对比慢速模式并结束演示
-
-等快速模式完成，在**终端A**按一次 Ctrl+C，等所有节点退出、提示符回来，再执行：
-
-```bash
-ros2 launch patrol_robot patrol.launch.py mode:=slow
-```
-
-在**终端B**重新查询速度，两项应均为 `0.5`，并能观察到运动更慢。慢速三航点完成后，在终端A按 Ctrl+C，等待全部节点退出。
-
-最后可在终端B检查：
-
-```bash
-ps -eo pid,ppid,args | grep -E '[p]atrol_server|[p]atrol_client|[t]urtlesim_node'
-```
-
-没有输出表示节点已停止；`exit` 只退出当前容器终端。录制回放的完整流程见第9节，独立客户端取消演示见第8节，不要与本次 Launch 进程混用。
-
 ## 目录
 
+- [0. 现场演示：从新终端开始的完整操作流程](#0-现场演示从新终端开始的完整操作流程)
+  - [0.1 准备三个终端与构建环境](#01-准备三个终端与构建环境)
+  - [0.2 一键启动、三航点与实时进度](#02-一键启动三航点与实时进度)
+  - [0.3 修改参数展示快慢变化](#03-修改参数展示快慢变化)
+  - [0.4 中途取消与停车确认](#04-中途取消与停车确认)
+  - [0.5 录制、检查和回放 bag](#05-录制检查和回放-bag)
+  - [0.6 演示收尾与验收对照表](#06-演示收尾与验收对照表)
 - [1. 项目目标与完成情况](#1-项目目标与完成情况)
 - [2. 系统架构与接口](#2-系统架构与接口)
 - [3. 导航与取消的实现原理](#3-导航与取消的实现原理)
@@ -103,6 +26,243 @@ ps -eo pid,ppid,args | grep -E '[p]atrol_server|[p]atrol_client|[t]urtlesim_node
 - [11. 常见问题](#11-常见问题)
 - [12. 当前限制与后续方向](#12-当前限制与后续方向)
 - [13. 挑战加分项：进度与演示命令](#13-挑战加分项进度与演示命令)
+
+## 0. 现场演示：从新终端开始的完整操作流程
+
+本节按基础功能验收的现场顺序编排，可以直接照着操作；四项拓展的独立演示见[第13节](#13-挑战加分项进度与演示命令)。这里使用作者已有的学习容器，外部克隆仓库的使用者先按[第5.2节](#52-原生-ros2-环境克隆与编译)准备 ROS2 环境并使用自己的仓库路径；本仓库不包含课程镜像。
+
+**包名说明：**课程示例中的 `my_turtle_pkg` 在本项目中对应 `patrol_robot`，接口包对应 `patrol_interfaces`。本仓库实际的一键命令是：
+
+```bash
+ros2 launch patrol_robot patrol.launch.py
+```
+
+默认是慢速模式；下面先显式使用 `mode:=fast` 展示完整三航点巡逻。所有代码块中的命令保留换行，逐行执行，不要把多行合并成一条命令。
+
+### 0.1 准备三个终端与构建环境
+
+新开三个主机终端，分别记为 **A、B、C**。每个终端都先输入以下两行进入同一个学习容器：
+
+```bash
+cd '/home/cisyam/文档/ChatGPT/ROS2实战'
+bash ros2_learning.sh enter
+```
+
+`cisyam@...$` 是主机提示符；看到 `[ROS2实战] ...$` 才表示进入容器。每个终端的环境独立，不能只在A里 source 后就认为B、C也可运行巡逻包。
+
+**终端A：构建并加载本项目。**
+
+```bash
+source /opt/ros/humble/setup.bash
+cd /learning/patrol_project/ros2_ws
+colcon build --symlink-install --packages-up-to patrol_robot
+source install/setup.bash
+ros2 pkg prefix patrol_robot
+```
+
+预期最后输出 `/learning/patrol_project/ros2_ws/install/patrol_robot`。
+
+**终端B、C：等A构建成功后，各自加载环境。**
+
+```bash
+source /opt/ros/humble/setup.bash
+source /learning/patrol_project/ros2_ws/install/setup.bash
+```
+
+**回到终端A，检查旧进程：**
+
+```bash
+ps -eo pid,ppid,args | grep -E '[p]atrol_server|[p]atrol_client|[t]urtlesim_node|[r]os2 launch|[r]os2 bag'
+```
+
+没有输出再开始。若有活跃旧节点，先到原运行终端按 Ctrl+C，等它退出；不要在旧系统还运行时启动新一套。`<defunct>` 是已退出待回收的记录，不能靠重复 kill 消除，说明见第11节。
+
+### 0.2 一键启动、三航点与实时进度
+
+**终端A输入：**
+
+```bash
+ros2 launch patrol_robot patrol.launch.py mode:=fast
+```
+
+此终端保持运行。窗口出现一只海龟，沿 `(2,2) → (8,2) → (8,8)` 依次巡逻；本项目先转向再前进，并以0.10的距离阈值判断到达，因此不要求轨迹恰好穿过数学上的航点中心。
+
+**终端B输入：**
+
+```bash
+ros2 node list
+ros2 action info /patrol
+ros2 param get /patrol_server linear_speed
+ros2 param get /patrol_server angular_speed
+```
+
+应看到模拟器、服务端和客户端，`/patrol` 只有一个服务端，两项速度上限均为 `1.0`。
+
+**向观众展示终端A中的客户端日志：**
+
+```text
+前往航点 2/3，剩余距离 ...
+任务结束：状态码=4，全部完成=True，已到达航点数=3
+```
+
+Launch 会给日志加节点前缀，能据此区分客户端反馈和服务端控制日志。这里打印的是 turtlesim 距离数值，不将其作为真实机器人米制定位测量。任务结束后海龟停车、窗口保留正常。
+
+**本轮结束：在终端A按一次 Ctrl+C，等所有 Launch 节点退出、提示符回来，再进入下一项。**
+
+### 0.3 修改参数展示快慢变化
+
+**终端A：以慢速模式开始新一轮巡逻。**
+
+```bash
+ros2 launch patrol_robot patrol.launch.py mode:=slow
+```
+
+等A显示“巡逻服务已就绪”且开始运动后，**终端B查询并设置：**
+
+```bash
+ros2 param get /patrol_server linear_speed
+ros2 param get /patrol_server angular_speed
+ros2 param set /patrol_server linear_speed 0.5
+```
+
+初始两项速度上限都是 `0.5`。在海龟朝目标直行、且距离还较远时，先观察几秒，再在B输入：
+
+```bash
+ros2 param set /patrol_server linear_speed 1.0
+ros2 param get /patrol_server linear_speed
+```
+
+预期显示 `Set parameter successful`，查询为 `1.0`，海龟直行明显变快。若想展示转向上限，也可在尚有后续转弯时输入：
+
+```bash
+ros2 param set /patrol_server angular_speed 1.0
+ros2 param get /patrol_server angular_speed
+```
+
+参数是速度上限，接近目标或方向对准时控制器会减速；不要在已经停车时观察速度差。修改仅对当前进程有效，重启时会采用代码默认值或 Launch 指定值。
+
+**等本轮完成后，在终端A按 Ctrl+C，等全部节点退出。**
+
+### 0.4 中途取消与停车确认
+
+这一项分开启动三个节点，让客户端能单独接收 Ctrl+C 并完成取消握手。不要保留上一项 Launch。
+
+**终端A：只启动新的海龟模拟器。**
+
+```bash
+ros2 run turtlesim turtlesim_node
+```
+
+**终端B：启动服务端，使用较长的单航点超时，避免返航干扰演示。**
+
+```bash
+ros2 run patrol_robot patrol_server --ros-args -p linear_speed:=0.5 -p angular_speed:=1.0 -p waypoint_timeout:=60.0 -p return_timeout:=60.0
+```
+
+看到服务已就绪后，**终端C启动客户端：**
+
+```bash
+ros2 run patrol_robot patrol_client --ros-args -p cancel_timeout:=120.0 -p "waypoints:=[2.0, 2.0, 8.0, 2.0, 8.0, 8.0]"
+```
+
+等海龟真正开始移动、尚未完成任务时，**只在终端C按一次 Ctrl+C**。不要在A或B按，否则展示的是节点退出，不是客户端取消握手。
+
+客户端预期输出：
+
+```text
+收到 Ctrl+C，请求取消巡逻
+服务端已同意取消，等待最终结果
+任务结束：状态码=5，全部完成=False，已到达航点数=...
+```
+
+同时观察海龟停止前进和转动。完成数取决于取消时机，不要求固定为0。控制定时器周期为0.05秒，收到取消后在控制周期中优先发布零速度；这里要求及时停车，不声称零延迟或硬实时保证。
+
+等C回到提示符后，可进一步查看停车状态：
+
+```bash
+ros2 topic echo /turtle1/pose --once
+```
+
+应看到 `linear_velocity: 0.0`、`angular_velocity: 0.0`。这是停车后的状态核对，不是取消延迟的精确测量。
+
+**本项结束：先在终端B按 Ctrl+C 停服务端，再在终端A按 Ctrl+C 停模拟器，等两边提示符回来。**
+
+### 0.5 录制、检查和回放 bag
+
+本项继续使用已加载环境的A、B终端。B既是录制终端也是回放终端，期间不要退出或关闭B，以保留本轮目录变量。
+
+**先在终端B录制，新建带时间后缀的目录，避免重复使用旧目录：**
+
+```bash
+mkdir -p /learning/patrol_project/bags
+DEMO_BAG="/learning/patrol_project/bags/demo_$(date +%Y%m%d_%H%M%S)"
+echo "$DEMO_BAG"
+ros2 bag record -o "$DEMO_BAG" /turtle1/cmd_vel /turtle1/pose
+```
+
+记下 echo 打印的路径。必须看到 `Recording...` 再往下做；如果提示目录已存在，说明录制没启动，重新设置一个新目录后再录。
+
+**再在终端A开始完整巡逻：**
+
+```bash
+ros2 launch patrol_robot patrol.launch.py mode:=fast
+```
+
+等A显示 SUCCEEDED、`全部完成=True`、完成数3：
+
+1. 先在A按 Ctrl+C，等 Launch 节点全部退出。
+2. 再在B按 Ctrl+C，等 `Recording stopped` 和提示符回来，确保缓存写入完成。
+3. 在B查看录制信息：
+
+```bash
+ros2 bag info "$DEMO_BAG"
+```
+
+应有两个话题，且消息数都大于0：
+
+```text
+/turtle1/cmd_vel    geometry_msgs/msg/Twist
+/turtle1/pose       turtlesim/msg/Pose
+```
+
+**回放前，在终端A只启动新的海龟：**
+
+```bash
+ros2 run turtlesim turtlesim_node
+```
+
+等窗口出现。新海龟应回到默认 `(5.5444,5.5444)`、朝向0，与本轮录制起点一致；这时不要启动服务端、客户端或 Launch，避免它们与回放争抢速度话题。
+
+**在终端B回放速度：**
+
+```bash
+ros2 bag play "$DEMO_BAG" --topics /turtle1/cmd_vel
+```
+
+应看到海龟重演巡逻路径并最终停车。仅回放 pose 不会驱动海龟运动。回放是按录制命令开环重演，时序差异可能带来小偏差，不保证和原记录逐点完全一致。
+
+回放完成后B会返回提示符，再在A按 Ctrl+C 关闭模拟器。如果B意外关闭，重新加载环境后将 `DEMO_BAG` 设置为之前记下的实际目录，再运行 info/play，不能把空变量当作目录使用。
+
+### 0.6 演示收尾与验收对照表
+
+在已加载环境的空闲终端检查：
+
+```bash
+ps -eo pid,ppid,args | grep -E '[p]atrol_server|[p]atrol_client|[t]urtlesim_node|[r]os2 launch|[r]os2 bag'
+```
+
+没有活跃旧节点后，可以用 `exit` 退出各自容器会话。
+
+| 基础验收项 | 对应操作 | 现场证据 |
+|---|---|---|
+| 一条命令启动完整系统 | 0.2 | Launch 启动模拟器、服务端和客户端 |
+| 至少3个航点与连线路径 | 0.2 | 窗口运动轨迹、SUCCEEDED、完成数3 |
+| 客户端实时进度 | 0.2 | `前往航点 2/3，剩余距离 ...` |
+| 中途取消后停车 | 0.4 | 取消确认、状态5、海龟无平移和转动 |
+| 参数改变速度 | 0.3 | set成功、get结果、运动快慢变化 |
+| bag查看与回放 | 0.5 | 两话题消息非空，单独模拟器上回放重演轨迹 |
+
+建议现场按0.1～0.6顺序展示。每个阶段都停掉上一套再启动下一套；四项拓展演示另外按第13节独立运行，不与此流程叠加。
 
 ## 1. 项目目标与完成情况
 
