@@ -19,6 +19,9 @@ class PatrolServer(Node):
     def __init__(self):
         super().__init__('patrol_server')
 
+        self.declare_parameter('linear_speed', 1.0)
+        self.declare_parameter('angular_speed', 1.0)
+
         self.pose = None
 
         
@@ -121,6 +124,7 @@ class PatrolServer(Node):
             return
 
         cmd = Twist()
+        angular_speed = self.get_parameter('angular_speed').value
 
         if self.motion_state == 'turn':
             if abs(angle_error) < 0.03:
@@ -128,16 +132,19 @@ class PatrolServer(Node):
                 self.get_logger().info('方向已对准，开始前进')
             else:
                 cmd.angular.z = max(
-                    -1.0, min(1.0, 2.0 * angle_error)
+                    -angular_speed,
+                    min(angular_speed, 2.0 * angle_error)
                 )
 
         elif self.motion_state == 'drive':
             if abs(angle_error) > 0.30:
                 self.motion_state = 'turn'
             else:
-                cmd.linear.x = min(1.0, distance)
+                linear_speed = self.get_parameter('linear_speed').value
+                cmd.linear.x = min(linear_speed, distance)
                 cmd.angular.z = max(
-                    -1.0, min(1.0, 2.0 * angle_error)
+                    -angular_speed,
+                    min(angular_speed, 2.0 * angle_error)
                 )
 
         self.cmd_vel_publisher.publish(cmd)

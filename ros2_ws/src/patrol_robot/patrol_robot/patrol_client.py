@@ -10,6 +10,16 @@ from rclpy.signals import SignalHandlerOptions
 class PatrolClient(Node):
     def __init__(self):
         super().__init__('patrol_client')
+
+        self.declare_parameter('cancel_timeout', 10.0)
+
+        self.declare_parameter(
+            'waypoints',
+            [2.0, 2.0, 8.0, 2.0, 8.0, 8.0]
+        )
+
+        
+        
         self.cancel_timer = None
         self.goal_handle = None
         self.result_future = None
@@ -40,14 +50,29 @@ class PatrolClient(Node):
         self.send_patrol_goal()
 
     def send_patrol_goal(self):
-        goal = Patrol.Goal()
-        goal.waypoints = [
-            Point(x=2.0, y=2.0, z=0.0),
-            Point(x=8.0, y=2.0, z=0.0),
-            Point(x=8.0, y=8.0, z=0.0),
-        ]
+        coordinates = self.get_parameter('waypoints').value
 
-        self.get_logger().info('发送巡逻任务，共3个航点')
+        if len(coordinates) == 0 or len(coordinates) % 2 != 0:
+            self.get_logger().error(
+                '航点参数不能为空，且必须每两个数组成一个 x、y 坐标'
+            )
+            return
+
+        goal = Patrol.Goal()
+
+        for index in range(0, len(coordinates), 2):
+            point = Point(
+                x=coordinates[index],
+                y=coordinates[index + 1],
+                z=0.0
+            )
+            goal.waypoints.append(point)
+
+        self.waypoint_count = len(goal.waypoints)
+
+        self.get_logger().info(
+            f'发送巡逻任务，共{self.waypoint_count}个航点'
+        )
 
         self.send_goal_future = self.action_client.send_goal_async(
             goal,
@@ -56,6 +81,7 @@ class PatrolClient(Node):
         self.send_goal_future.add_done_callback(
             self.goal_response_callback
         )
+
 
     def goal_response_callback(self, future):
         self.goal_handle = future.result()
@@ -71,8 +97,14 @@ class PatrolClient(Node):
             self.result_callback
         )
         if not self.exiting:
+            cancel_timeout = self.get_parameter('cancel_timeout').value
+
+            self.get_logger().info(
+                f'任务超时时间：{cancel_timeout:.1f}秒'
+            )
+
             self.cancel_timer = self.create_timer(
-                10.0,
+                cancel_timeout,
                 self.cancel_patrol
             )
 
@@ -80,11 +112,11 @@ class PatrolClient(Node):
         feedback = feedback_msg.feedback
 
         self.get_logger().info(
-            f'前往航点 {feedback.current_waypoint}/3，'
+            f'前往航点 {feedback.current_waypoint}/{self.waypoint_count}，'
             f'剩余距离 {feedback.remaining_distance:.2f}'
         )
 
-    def cancel_patrol(self, reason='执行超过10秒'):
+    def cancel_patrol(self, reason='已达到任务超时时间'):
         if self.cancel_timer is not None:
             self.cancel_timer.cancel()
 
