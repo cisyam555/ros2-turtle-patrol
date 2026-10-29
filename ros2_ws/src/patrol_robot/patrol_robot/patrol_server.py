@@ -8,7 +8,7 @@ import tempfile
 import rclpy
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
-from rclpy.action import ActionServer, CancelResponse
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from patrol_interfaces.action import Patrol
 from turtlesim.msg import Pose
 from geometry_msgs.msg import Point, Twist
@@ -38,6 +38,17 @@ class PatrolServer(Node):
                                       #motion_state记录当前在等待、转向还是前进
         self.active_goal_handle = None
         self.current_waypoint = 0
+
+        # 每次接收有效的新任务，编号递增
+        self.goal_generation = 0
+
+        # 当前拥有海龟控制权的任务编号
+        self.active_generation = None
+
+        # 通知等待的新任务：旧任务已经退出并完成清理
+        self.goal_done_future = None
+
+        self.goal_contexts = {}
 
         self.cmd_vel_publisher = self.create_publisher(
             Twist,
@@ -76,6 +87,8 @@ class PatrolServer(Node):
                 Patrol,
                 'patrol',
                 self.execute_callback,
+                goal_callback=self.goal_callback,
+                handle_accepted_callback=self.handle_accepted_callback,
                 cancel_callback=self.cancel_callback,
             )
 
@@ -85,6 +98,56 @@ class PatrolServer(Node):
         stop_msg = Twist()
         self.cmd_vel_publisher.publish(stop_msg)
 
+    def goal_callback(self, goal_request):
+        if self.pose is None:
+            self.get_logger().warn('尚未收到位姿，拒绝新任务')
+            return GoalResponse.REJECT
+
+        if len(goal_request.waypoints) == 0:
+            self.get_logger().warn('航点列表为空，拒绝新任务')
+            return GoalResponse.REJECT
+
+        for point in goal_request.waypoints:
+            if not (
+                math.isfinite(point.x)
+                and math.isfinite(point.y)
+                and 0.5 <= point.x <= 10.5
+                and 0.5 <= point.y <= 10.5
+            ):
+                self.get_logger().warn(
+                    '航点无效，拒绝新任务：'
+                    'x、y 必须是 0.5～10.5 内的有限数值'
+                )
+                return GoalResponse.REJECT
+
+        self.get_logger().info('新任务航点检查通过，允许接收')
+        return GoalResponse.ACCEPT
+
+    def handle_accepted_callback(self, goal_handle):
+        self.goal_generation += 1
+        generation = self.goal_generation
+
+        # 保存前一个任务的退出通知
+        previous_done = self.goal_done_future
+
+        # 为本任务创建独立的退出通知
+        current_done = Future()
+        self.goal_done_future = current_done
+
+        # 使用 Action 的唯一任务 ID 保存对应信息
+        goal_id = bytes(goal_handle.goal_id.uuid)
+        self.goal_contexts[goal_id] = {
+            'generation': generation,
+            'previous_done': previous_done,
+            'current_done': current_done,
+        }
+
+        self.get_logger().info(
+            f'已接收任务 #{generation}，准备交接控制权'
+        )
+
+        # 交给执行器调度 execute_callback
+        goal_handle.execute()
 
     def cancel_callback(self, goal_handle):
         self.get_logger().info('收到取消请求，允许取消')
@@ -103,6 +166,20 @@ class PatrolServer(Node):
                     if not self.motion_future.done():
                         self.motion_future.set_result('canceled')
                 return
+
+        # 出现更新的任务时，停止旧任务并唤醒执行回调
+        if (
+            self.active_generation is not None
+            and self.active_generation != self.goal_generation
+        ):
+            self.stop_turtle()
+            self.target_point = None
+            self.motion_state = 'idle'
+
+            if self.motion_future is not None:
+                if not self.motion_future.done():
+                    self.motion_future.set_result('preempted')
+            return
 
         # 单个航点（含返航段）超时，唤醒执行回调由它决定返航或停车。
         if (
@@ -198,98 +275,118 @@ class PatrolServer(Node):
         result.completed = False
         result.visited_count = 0
 
-        if self.motion_future is not None:
-            self.get_logger().warn('正在执行运动，本次任务不执行')
-            goal_handle.abort()
-            return result
+        goal_id = bytes(goal_handle.goal_id.uuid)
+        context = self.goal_contexts.pop(goal_id)
 
-        if self.pose is None:
-            self.get_logger().warn('尚未收到海龟位置')
-            goal_handle.abort()
-            return result
+        generation = context['generation']
+        previous_done = context['previous_done']
+        current_done = context['current_done']
 
-        if len(waypoints) == 0:
-            self.get_logger().warn('航点列表不能为空')
-            goal_handle.abort()
-            return result
-
-        for point in waypoints:
-            if not (
-                math.isfinite(point.x)
-                and math.isfinite(point.y)
-                and 0.5 <= point.x <= 10.5
-                and 0.5 <= point.y <= 10.5
-            ):
-                self.get_logger().warn(
-                    '航点无效，x、y 应在 0.5～10.5 内'
+        # 这个内部函数只负责判断和结束任务，不清理共享控制状态
+        def finish_if_interrupted():
+            if goal_handle.is_cancel_requested:
+                goal_handle.canceled()
+                self.get_logger().info(
+                    f'任务 #{generation} 已取消，'
+                    f'已到达 {result.visited_count} 个航点'
                 )
+                return True
+
+            if generation != self.goal_generation:
                 goal_handle.abort()
-                return result
+                self.get_logger().info(
+                    f'任务 #{generation} 被新任务抢占，'
+                    f'已到达 {result.visited_count} 个航点'
+                )
+                return True
+
+            return False
+
+        # 巡逻和返航共用同一段导航逻辑
+        async def move_to_point(target, returning=False):
+            self.motion_future = Future()
+            self.target_point = target
+            self.motion_state = 'turn'
+            self.motion_start_time = self.get_clock().now()
+            self.returning = returning
+
+            return await self.motion_future
 
         try:
-            # 以任务开始那一刻的位置为返航点，不能写死原点。
-            self.home_point = Point(x=self.pose.x, y=self.pose.y, z=0.0)
+            # 必须等旧任务完成停车和清理，才能接管
+            if previous_done is not None:
+                if not previous_done.done():
+                    self.get_logger().info(
+                        f'任务 #{generation} 等待旧任务退出'
+                    )
+                    await previous_done
+
+            # 等待期间可能被取消，或被更新的任务替代
+            if finish_if_interrupted():
+                return result
+
+            if self.pose is None:
+                goal_handle.abort()
+                self.get_logger().warn('尚未收到海龟位置')
+                return result
+
+            # 从这里开始，本任务拥有共享控制状态
+            self.active_generation = generation
+            self.active_goal_handle = goal_handle
+
+            self.home_point = Point(
+                x=self.pose.x,
+                y=self.pose.y,
+                z=0.0,
+            )
+
             self.get_logger().info(
-                f'记录返航点 ({self.home_point.x:.2f}, '
+                f'任务 #{generation} 取得控制权，'
+                f'记录返航点 '
+                f'({self.home_point.x:.2f}, '
                 f'{self.home_point.y:.2f})'
             )
 
             for index, target in enumerate(waypoints):
-                # 在两个航点之间取消时，不再启动下一段运动。
-                if goal_handle.is_cancel_requested:
-                    self.stop_turtle()
-                    goal_handle.canceled()
-                    self.get_logger().info(
-                        f'任务已取消，已到达 {result.visited_count} 个航点'
-                    )
+                if finish_if_interrupted():
                     return result
 
-                self.active_goal_handle = goal_handle
                 self.current_waypoint = index + 1
 
-                self.motion_future = Future()
-                self.target_point = target
-                self.motion_state = 'turn'
-                self.motion_start_time = self.get_clock().now()
-                self.returning = False
-
                 self.get_logger().info(
+                    f'任务 #{generation} '
                     f'前往航点 {index + 1}/{len(waypoints)}：'
                     f'({target.x:.2f}, {target.y:.2f})'
                 )
 
-                outcome = await self.motion_future
+                outcome = await move_to_point(target)
+
+                # 已经实际到达的航点，即使随后发生抢占也应计数
+                if outcome == 'reached':
+                    result.visited_count += 1
+                    self.get_logger().info(
+                        f'已到达 {result.visited_count} 个航点'
+                    )
+
+                # 每次异步等待结束后，都重新检查取消和抢占
+                if finish_if_interrupted():
+                    return result
 
                 if outcome == 'timeout':
-                    # 返航段再次超时，不再二次返航，直接停车结束。
-                    if self.returning:
-                        self.stop_turtle()
-                        goal_handle.abort()
-                        self.get_logger().warn(
-                            '返航超时，已停车，任务中止'
-                        )
+                    self.get_logger().info(
+                        '开始返航到任务起点'
+                    )
+
+                    return_outcome = await move_to_point(
+                        self.home_point,
+                        returning=True,
+                    )
+
+                    # 返航途中同样允许取消和抢占
+                    if finish_if_interrupted():
                         return result
 
-                    self.returning = True
-                    self.motion_start_time = self.get_clock().now()
-                    self.motion_future = Future()
-                    self.target_point = self.home_point
-                    self.motion_state = 'turn'
-                    self.get_logger().info('开始返航到任务起点')
-
-                    outcome = await self.motion_future
-
-                    if goal_handle.is_cancel_requested:
-                        self.stop_turtle()
-                        goal_handle.canceled()
-                        self.get_logger().info(
-                            '返航中被取消，'
-                            f'已到达 {result.visited_count} 个航点'
-                        )
-                        return result
-
-                    self.stop_turtle()
-                    if outcome == 'reached':
+                    if return_outcome == 'reached':
                         self.get_logger().info(
                             '已返回起点，但巡逻未完成'
                         )
@@ -297,44 +394,44 @@ class PatrolServer(Node):
                         self.get_logger().warn(
                             '返航未到达起点，已停车'
                         )
+
                     goal_handle.abort()
-                    return result
-
-                # 只有真正到达才计数，取消或超时唤醒等待不算到达。
-                if outcome == 'reached':
-                    result.visited_count += 1
-                    self.get_logger().info(
-                        f'已到达 {result.visited_count} 个航点'
-                    )
-
-                if goal_handle.is_cancel_requested:
-                    self.stop_turtle()
-                    goal_handle.canceled()
-                    self.get_logger().info(
-                        f'任务已取消，已到达 {result.visited_count} 个航点'
-                    )
                     return result
 
                 if outcome != 'reached':
-                    self.stop_turtle()
                     goal_handle.abort()
-                    self.get_logger().warn('运动未完成，任务中止')
+                    self.get_logger().warn(
+                        '运动未完成，任务中止'
+                    )
                     return result
 
             result.completed = True
             goal_handle.succeed()
-            self.get_logger().info('全部航点巡逻完成')
+            self.get_logger().info(
+                f'任务 #{generation} 全部航点巡逻完成'
+            )
             return result
-        finally:
-            self.active_goal_handle = None
-            self.current_waypoint = 0
 
-            self.target_point = None
-            self.motion_state = 'idle'
-            self.motion_future = None
-            self.motion_start_time = None
-            self.returning = False
-            self.stop_turtle()
+        finally:
+            try:
+                # 只有当前控制者，才能停车和清理共享状态
+                if self.active_generation == generation:
+                    self.stop_turtle()
+
+                    self.active_goal_handle = None
+                    self.active_generation = None
+                    self.current_waypoint = 0
+
+                    self.target_point = None
+                    self.motion_state = 'idle'
+                    self.motion_future = None
+                    self.motion_start_time = None
+                    self.returning = False
+                    self.home_point = None
+            finally:
+                # 清理结束后，才允许后面的任务继续
+                if not current_done.done():
+                    current_done.set_result(True)
             
 
 def main(args=None):
