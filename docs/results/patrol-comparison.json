@@ -1,0 +1,35 @@
+{
+  "alignment": "First recorded nonzero cmd_vel is t=0 (includes turning).",
+  "units": "turtlesim coordinate units; seconds",
+  "interpolation": "Linear XY interpolation; common motion interval only; no extrapolation.",
+  "step_seconds": 0.05,
+  "common_start_seconds": 0.0,
+  "common_end_seconds": 29.75,
+  "aligned_samples": 596,
+  "position_error_mean": 0.022249851872344902,
+  "position_error_rmse": 0.032514562138165407,
+  "position_error_max": 0.056027973645654566,
+  "initial_position_difference": 0.0,
+  "initial_heading_difference_rad": 0.0,
+  "final_recorded_position_difference": 9.113704166770648e-05,
+  "runs": [
+    {
+      "path": "/learning/patrol_project/bags/compare_run_01_retry",
+      "start_ns": 1793280034000409873,
+      "stop_ns": 1793280063750785517,
+      "duration": 29.750375644,
+      "pose_count": 2218,
+      "command_count": 598,
+      "initial_theta": 0.0
+    },
+    {
+      "path": "/learning/patrol_project/bags/compare_run_02",
+      "start_ns": 1793280125812713387,
+      "stop_ns": 1793280155613299404,
+      "duration": 29.800586017,
+      "pose_count": 2199,
+      "command_count": 599,
+      "initial_theta": 0.0
+    }
+  ]
+}

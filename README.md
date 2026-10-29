@@ -2,12 +2,12 @@
 
 基于 **ROS 2 Humble、Python 和 turtlesim** 的独立学习项目：下发航点列表，按顺序巡逻，实时反馈进度，支持取消任务、参数配置、Launch 一键启动，以及 rosbag 数据录制与轨迹回放。
 
-当前里程碑：**双龟巡逻、超时返航与新任务抢占版**。已完成六项基础功能，并在学习环境中验证双龟一键巡逻、超时返航的四项主要场景，以及双任务抢占的基本场景。代码面向 turtlesim，未适配真实机器人底盘。
+当前里程碑：**巡逻系统与四项拓展功能完成版**。已实现六项基础功能和四项拓展，并完成主要或基本场景验证，包括双龟一键巡逻、超时返航、双任务抢占和两轮轨迹数值对比。代码面向 turtlesim，未适配真实机器人底盘。
 
 ## 从新终端开始：完整演示启动命令
 
 本节对应作者现有的学习容器，可直接用于展示**已经实现的基础系统**。
-四个挑战加分项中，双龟巡逻、超时自动返航、多任务抢占已通过主要或基本场景的人工验收；两轮轨迹数值对比尚未实现。拓展演示命令见第13节。
+四个挑战加分项均已实现并完成主要或基本场景验证；复杂任务切换边界和完整自动化回归仍待补充。拓展演示命令见第13节。
 外部克隆仓库的使用者请按第5.2节准备原生 ROS2 环境；本仓库不包含课程镜像。
 
 ### 演示终端A：进入容器、构建、快速巡逻
@@ -233,7 +233,11 @@ ros2-turtle-patrol/
 │           │   └── patrol_client.py
 │           ├── setup.py
 │           └── package.xml
-└── tools/learning-container/           原学习环境的会话清理脚本备份
+├── docs/images/                       已录制两轮实验的轨迹图和误差图
+├── docs/results/                      可分享的实验统计摘要
+└── tools/
+    ├── compare_bags.py                两轮 bag 时间对齐、绘图和位置误差统计
+    └── learning-container/            原学习环境的会话清理脚本备份
 ```
 
 `build/`、`install/`、日志、缓存和 `bags/` 均不提交 Git。`bags/patrol_run_01` 是本地验收数据，并未随仓库发布；可按第9节自行录制。
@@ -595,6 +599,7 @@ ros2 bag play /learning/patrol_project/bags/patrol_run_01 \
 | bag 回放 | 停止原控制节点、重启海龟后，速度回放重现轨迹 |
 | 取消集成测试 | 隔离通信域内发送 SIGINT，收到 CANCELED、零速度及正常退出 |
 | 无效目标拒绝 | 越界目标 `(20,2)` 在接单阶段被拒绝，CLI 显示 `Goal was rejected.` |
+| 两轮轨迹数值对比 | 596个公共采样点；平均误差0.022250、RMSE 0.032515、最大误差0.056028（turtlesim单位） |
 | 基本双任务抢占 | A前往 `(2,2)` 途中发送B `(8,5)`；A返回ABORTED、计数0，B返回SUCCEEDED、计数1 |
 | 双龟一键巡逻 | `dual_patrol.launch.py` 启动两组节点，两只海龟各完成三个航点 |
 | 单航点超时返航 | 5秒超时触发，返回记录的起点；状态6、完成数0 |
@@ -669,7 +674,7 @@ ls "$(ros2 pkg prefix patrol_robot)/share/patrol_robot/launch"
 - 暂停后继续、按顺序执行全部任务的队列尚未实现。多任务抢占已通过基本双任务场景；连续多目标、返航中抢占、抢占与取消并发等场景尚未专门验收。
 - 完整的参数值校验、位姿中断/过期检测。每航点独立超时及返航超时保护已实现。
 - 把路线和超时进一步暴露为 Launch 参数；当前只暴露快慢模式。
-- rosbag 位姿的自动数值轨迹对比与误差指标。
+- 两轮位置对比已实现；目前只支持 turtle1 的 SQLite3 bag。完整朝向轨迹误差、空间配准、按路径进度对齐、多轮统计与自动判定阈值尚未实现。
 - 全功能自动化回归测试与持续集成；模板测试文件不代表检查已全部通过。
 - 真实机器人所需的里程计、定位、障碍物检测、速度约束和急停机制。
 
@@ -682,7 +687,7 @@ ls "$(ros2 pkg prefix patrol_robot)/share/patrol_robot/launch"
 | 双龟巡逻 | 已实现，主要人工验收通过 | 独立控制、同时巡逻、一条 Launch 命令启动，两组各完成三个航点 |
 | 超时自动返航 | 已实现，四项主要人工验收通过 | 超时返航、正常到达、返航取消、返航再次超时 |
 | 多任务抢占 | 已实现，基本双任务人工验收通过 | A被中止、B接管并成功；复杂边界场景待验收 |
-| 回放对比 | 未实现 | 已有单次录制与视觉回放，尚无两轮轨迹数值对比工具 |
+| 回放对比 | 已实现，两轮真实录制数据计算通过 | 同配置两次闭环巡逻的轨迹图、时间对齐误差图、均值/RMSE/最大值及终点差 |
 
 ### 13.1 双龟一键启动
 
@@ -818,11 +823,123 @@ ROS2 Action 没有独立 PREEMPTED 状态，本项目用 ABORTED 并在日志中
 
 测试结束时，两个 CLI 完成后会回到提示符；先在终端2按 Ctrl+C 停服务端，再在终端1按 Ctrl+C 停模拟器。
 
-### 13.5 后续：两轮轨迹对比
+### 13.5 两轮 bag 轨迹数值对比
 
-剩余拓展任务是同配置两轮 bag 比较：统一初始位姿、路线和参数，对齐相对时间后计算轨迹误差。仿真模型确定性不代表 ROS 调度与采样逐点相同，也不能用一次视觉回放代替数值对比。目前未提供自动比较脚本。
+本项比较的是相同配置下的两次闭环巡逻，不是把同一个 bag 回放两次。先固定代码、初始位姿、速度、路线和超时参数；本次用 `patrol.launch.py mode:=fast`，路线为 `(2,2) → (8,2) → (8,8)`，线速度和角速度上限均为1.0，每轮重新创建模拟器。
 
-分步设计与待补充边界测试见 [拓展任务分步开发计划](docs/extension-plan.md)。
+#### 从新终端开始录制两轮
+
+先停止旧模拟器和巡逻节点。新开终端A、B，各自按13.4节的进入容器及 source 命令加载环境；终端A专门录制，终端B运行 Launch。
+
+**第一轮：先在终端A录制。**
+
+```bash
+mkdir -p /learning/patrol_project/bags
+ros2 bag record -o /learning/patrol_project/bags/compare_run_01_retry /turtle1/cmd_vel /turtle1/pose
+```
+
+看到 `Recording...` 后，再在终端B执行：
+
+```bash
+ros2 launch patrol_robot patrol.launch.py mode:=fast
+```
+
+等最终返回 SUCCEEDED、完成数3，先在终端B按 Ctrl+C 停止全部 Launch 节点，再在终端A按 Ctrl+C 停录，等待 `Recording stopped`。
+
+**第二轮：在终端A换目录开始录制。**
+
+```bash
+ros2 bag record -o /learning/patrol_project/bags/compare_run_02 /turtle1/cmd_vel /turtle1/pose
+```
+
+再次看到 `Recording...` 后，在终端B运行同一条快速 Launch 命令。必须重新启动模拟器，恢复默认初始位置。完成后仍先停 Launch、再停录制。
+
+回到终端A提示符后检查两轮：
+
+```bash
+ros2 bag info /learning/patrol_project/bags/compare_run_01_retry
+ros2 bag info /learning/patrol_project/bags/compare_run_02
+```
+
+两轮都应有 `/turtle1/pose` 和 `/turtle1/cmd_vel`，且消息数大于0。若输出目录已存在，录制命令会退出，不会自动接着录；换一个新目录并在比较命令中同步修改路径。消息总数为0的数据无效，不能拿来比较。
+
+#### 运行比较脚本
+
+脚本依赖 ROS2 的 `rosbag2_py`、`rclpy`、`turtlesim`、`geometry_msgs`，以及 NumPy、Matplotlib。当前学习容器已安装这些依赖。原生 Ubuntu 22.04/Humble 环境如缺包，可安装：
+
+```bash
+sudo apt-get install python3-numpy python3-matplotlib ros-humble-rosbag2-py ros-humble-rosbag2-storage-default-plugins ros-humble-turtlesim ros-humble-geometry-msgs ros-humble-rclpy
+```
+
+两个巡逻程序都停止后，在已 source ROS 的终端A运行，不需要重新构建：
+
+```bash
+python3 /learning/patrol_project/tools/compare_bags.py
+```
+
+需要指定其他录制目录或输出目录时：
+
+```bash
+python3 /learning/patrol_project/tools/compare_bags.py \
+  --bag1 /learning/patrol_project/bags/compare_run_01_retry \
+  --bag2 /learning/patrol_project/bags/compare_run_02 \
+  --output /learning/patrol_project/bags/compare_results \
+  --step 0.05
+```
+
+原生使用者将脚本和 bag 路径换成自己的克隆目录；脚本默认路径按脚本所在项目推导，不依赖当前工作目录。读取只支持上述 turtle1 话题及 SQLite3 存储，不启动海龟，不更改原始 bag。
+
+输出文件如下：
+
+| 文件 | 内容 |
+|---|---|
+| `trajectory_xy.png` | 两轮空间轨迹叠加图 |
+| `position_error.png` | 同一相对时刻的位置差曲线 |
+| `metrics.json` | 数据数量、时间范围和误差统计 |
+| `aligned_positions.csv` | 每个公共时间点的两轮坐标及位置差 |
+
+容器输出位于 `/learning/patrol_project/bags/compare_results`；主机上对应 `/home/cisyam/文档/ChatGPT/ROS2实战/patrol_project/bags/compare_results`。
+
+#### 时间对齐和误差含义
+
+- 每轮第一条非零速度命令的录制时间设为相对0秒，原地转向也计入运动。
+- 最后一条非零命令之后的第一条零速命令确定该轮命令运动区间的结束；这是命令时间范围，不是测得的物理运动精确起止。
+- 用0.05秒的公共网格，对 x、y 做线性插值，只比较两轮都覆盖的运动区间，不向较短一轮的结束时间之外外推。
+- 每点位置差为 `sqrt((x1-x2)^2 + (y1-y2)^2)`；均值为这些距离的平均值，RMSE为 `sqrt(mean(error^2))`，最大值为其中最大距离。
+- 末位置差使用两轮最终记录坐标单独计算，不要求它们来自同一相对时刻。两轮时长也分别报告，避免公共区间掩盖时长差异。
+- 所有位置数值均为 turtlesim 坐标单位，不把它们直接报告为真实机器人米级定位精度。脚本比较两轮的重复性，没有外部真值。
+
+脚本检查有效速度和位置、至少两个不同位姿时间戳、非零命令、最终停车命令及位姿对完整命令区间的覆盖；但它不能自动证明两轮任务都成功，也不会自动核对路线和速度参数，实验配置和 Action 结果仍需记录。
+
+#### 2026-10-29 实测结果
+
+| 指标 | 第一轮 | 第二轮 |
+|---|---:|---:|
+| 位姿消息 | 2218 | 2199 |
+| 速度消息 | 598 | 599 |
+| 命令运动区间（秒） | 29.750376 | 29.800586 |
+| 初始位姿（约） | `(5.544,5.544,0)` | `(5.544,5.544,0)` |
+
+两轮初始记录位置和朝向差均为0。公共采样区间为0～29.75秒，共596点：
+
+| 指标 | 位置差（turtlesim坐标单位） |
+|---|---:|
+| 平均值 | 0.022250 |
+| RMSE | 0.032515 |
+| 最大值 | 0.056028 |
+| 最终记录位置差 | 0.000091 |
+
+![两轮巡逻空间轨迹](docs/images/trajectory_xy.png)
+
+![按相对命令时间对齐的位置误差](docs/images/position_error.png)
+
+可下载的原始统计摘要见 [patrol-comparison.json](docs/results/patrol-comparison.json)。仓库保留脚本、示例图片和统计摘要；原始 bag 和本地生成的 CSV 留在被忽略的 `bags/`，读者需按上述流程自行录制。
+
+空间轨迹几乎重合，但同一相对时刻的位置并非完全一致。仿真模型确定性不保证 DDS 发现、回调调度、仿真步进和采样时刻完全相同；本次结果可与这些时序差异相容，不能仅凭误差图认定某个单一原因。真实机器人还会增加打滑、地面变化、传感器噪声、定位漂移和外部扰动。
+
+计算已用真实两轮数据执行；另以不同采样频率的同一直线验证插值误差为0，以 `(3,4)` 恒定偏移验证距离为5，并检查不外推及非法步长拒绝。这些检查不等于完整自动化回归套件。
+
+四项拓展的核心实现与主要/基本场景验收至此完成。后续可补充复杂抢占边界测试、全功能回归与更通用的数据分析。详细状态见 [拓展任务分步开发计划](docs/extension-plan.md)。
 
 ## 许可证
 
