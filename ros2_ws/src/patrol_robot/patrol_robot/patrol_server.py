@@ -11,7 +11,7 @@ from rclpy.signals import SignalHandlerOptions
 from rclpy.action import ActionServer, CancelResponse
 from patrol_interfaces.action import Patrol
 from turtlesim.msg import Pose
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point, Twist
 
 
 
@@ -23,8 +23,13 @@ class PatrolServer(Node):
         self.declare_parameter('linear_speed', 1.0)
         self.declare_parameter('angular_speed', 1.0)
         self.declare_parameter('turtle_name', 'turtle1')
+        self.declare_parameter('waypoint_timeout', 30.0)
+        self.declare_parameter('return_timeout', 60.0)
 
         self.pose = None
+        self.home_point = None          # 本次任务的出发位置，返航目标
+        self.motion_start_time = None   # 当前航点开始时间
+        self.returning = False          # 是否处于返航段
 
         
         self.motion_future = None
@@ -96,7 +101,35 @@ class PatrolServer(Node):
 
                 if self.motion_future is not None:
                     if not self.motion_future.done():
-                        self.motion_future.set_result(False)
+                        self.motion_future.set_result('canceled')
+                return
+
+        # 单个航点（含返航段）超时，唤醒执行回调由它决定返航或停车。
+        if (
+            self.motion_future is not None
+            and not self.motion_future.done()
+            and self.motion_start_time is not None
+        ):
+            elapsed = (
+                self.get_clock().now() - self.motion_start_time
+            ).nanoseconds / 1e9
+
+            # 返航段要留出掉头时间，使用更宽松的独立超时。
+            timeout = (
+                self.get_parameter('return_timeout').value
+                if self.returning
+                else self.get_parameter('waypoint_timeout').value
+            )
+
+            if elapsed > timeout:
+                self.stop_turtle()
+                self.target_point = None
+                self.motion_state = 'idle'
+                stage = '返航' if self.returning else '航点'
+                self.get_logger().warn(
+                    f'{stage}超时（{elapsed:.1f} 秒），结束当前运动段'
+                )
+                self.motion_future.set_result('timeout')
                 return
 
         if self.pose is None or self.target_point is None:
@@ -128,7 +161,7 @@ class PatrolServer(Node):
 
             if self.motion_future is not None:
                 if not self.motion_future.done():
-                    self.motion_future.set_result(True)
+                    self.motion_future.set_result('reached')
             return
 
         cmd = Twist()
@@ -194,6 +227,13 @@ class PatrolServer(Node):
                 return result
 
         try:
+            # 以任务开始那一刻的位置为返航点，不能写死原点。
+            self.home_point = Point(x=self.pose.x, y=self.pose.y, z=0.0)
+            self.get_logger().info(
+                f'记录返航点 ({self.home_point.x:.2f}, '
+                f'{self.home_point.y:.2f})'
+            )
+
             for index, target in enumerate(waypoints):
                 # 在两个航点之间取消时，不再启动下一段运动。
                 if goal_handle.is_cancel_requested:
@@ -210,16 +250,58 @@ class PatrolServer(Node):
                 self.motion_future = Future()
                 self.target_point = target
                 self.motion_state = 'turn'
+                self.motion_start_time = self.get_clock().now()
+                self.returning = False
 
                 self.get_logger().info(
                     f'前往航点 {index + 1}/{len(waypoints)}：'
                     f'({target.x:.2f}, {target.y:.2f})'
                 )
 
-                reached = await self.motion_future
+                outcome = await self.motion_future
 
-                # 只有真正到达才计数，取消唤醒等待不算到达。
-                if reached:
+                if outcome == 'timeout':
+                    # 返航段再次超时，不再二次返航，直接停车结束。
+                    if self.returning:
+                        self.stop_turtle()
+                        goal_handle.abort()
+                        self.get_logger().warn(
+                            '返航超时，已停车，任务中止'
+                        )
+                        return result
+
+                    self.returning = True
+                    self.motion_start_time = self.get_clock().now()
+                    self.motion_future = Future()
+                    self.target_point = self.home_point
+                    self.motion_state = 'turn'
+                    self.get_logger().info('开始返航到任务起点')
+
+                    outcome = await self.motion_future
+
+                    if goal_handle.is_cancel_requested:
+                        self.stop_turtle()
+                        goal_handle.canceled()
+                        self.get_logger().info(
+                            '返航中被取消，'
+                            f'已到达 {result.visited_count} 个航点'
+                        )
+                        return result
+
+                    self.stop_turtle()
+                    if outcome == 'reached':
+                        self.get_logger().info(
+                            '已返回起点，但巡逻未完成'
+                        )
+                    else:
+                        self.get_logger().warn(
+                            '返航未到达起点，已停车'
+                        )
+                    goal_handle.abort()
+                    return result
+
+                # 只有真正到达才计数，取消或超时唤醒等待不算到达。
+                if outcome == 'reached':
                     result.visited_count += 1
                     self.get_logger().info(
                         f'已到达 {result.visited_count} 个航点'
@@ -233,7 +315,7 @@ class PatrolServer(Node):
                     )
                     return result
 
-                if not reached:
+                if outcome != 'reached':
                     self.stop_turtle()
                     goal_handle.abort()
                     self.get_logger().warn('运动未完成，任务中止')
@@ -250,7 +332,9 @@ class PatrolServer(Node):
             self.target_point = None
             self.motion_state = 'idle'
             self.motion_future = None
-            self.stop_turtle()          
+            self.motion_start_time = None
+            self.returning = False
+            self.stop_turtle()
             
 
 def main(args=None):
