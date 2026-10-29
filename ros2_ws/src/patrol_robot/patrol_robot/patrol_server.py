@@ -1,4 +1,5 @@
 from rclpy.task import Future
+import hashlib
 import fcntl
 import logging
 import math
@@ -21,6 +22,7 @@ class PatrolServer(Node):
 
         self.declare_parameter('linear_speed', 1.0)
         self.declare_parameter('angular_speed', 1.0)
+        self.declare_parameter('turtle_name', 'turtle1')
 
         self.pose = None
 
@@ -34,12 +36,13 @@ class PatrolServer(Node):
 
         self.cmd_vel_publisher = self.create_publisher(
             Twist,
-            '/turtle1/cmd_vel',
+            f'/{self.get_parameter("turtle_name").value}/cmd_vel',
             10,
         )
+
         self.pose_subscriber = self.create_subscription(
             Pose,
-            '/turtle1/pose',
+            f'/{self.get_parameter("turtle_name").value}/pose',
             self.pose_callback,
             10
         )
@@ -251,38 +254,60 @@ class PatrolServer(Node):
             
 
 def main(args=None):
-    # Linux 进程锁：同一用户、同一 ROS 通信域只运行一份本服务端。
-    domain = int(os.environ.get('ROS_DOMAIN_ID', '0'))
-    lock_path = os.path.join(
-        tempfile.gettempdir(),
-        f'patrol_server_{os.getuid()}_domain_{domain}.lock',
-    )
-    with open(lock_path, 'a') as lock_file:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            logging.getLogger('patrol_server').error(
-                '巡逻服务端已经在运行，本次不重复启动。'
-                '请在原服务端终端按 Ctrl+C 后重试。'
-            )
-            return 1
-
-        # 文件句柄保持打开，进程退出时操作系统自动释放锁。
-        return run_node(args)
-
-
-def run_node(args=None):
-    # Ctrl+C 先交给 Python 清理，避免 ROS 提前关闭后停车消息无法发布。
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = PatrolServer()
 
+    lock_file = None
+    owns_control = False
+
     try:
+        domain = int(os.environ.get('ROS_DOMAIN_ID', '0'))
+
+        # 使用实际发布速度的话题区分控制对象
+        control_topic = node.cmd_vel_publisher.topic_name
+        topic_key = hashlib.sha256(
+            control_topic.encode('utf-8')
+        ).hexdigest()
+
+        lock_path = os.path.join(
+            tempfile.gettempdir(),
+            f'patrol_control_{os.getuid()}_{domain}_{topic_key}.lock',
+        )
+
+        lock_file = open(lock_path, 'a')
+
+        try:
+            fcntl.flock(
+                lock_file,
+                fcntl.LOCK_EX | fcntl.LOCK_NB
+            )
+        except BlockingIOError:
+            node.get_logger().error(
+                f'已有服务端控制 {control_topic}，本次不重复启动'
+            )
+            return 1
+
+        owns_control = True
+
+        node.get_logger().info(
+            f'已取得控制权：{control_topic}'
+        )
+
         rclpy.spin(node)
+
     except KeyboardInterrupt:
         pass
+
     finally:
-        if rclpy.ok():
+        # 只有取得控制权的实例，退出时才允许发停车指令
+        if owns_control and rclpy.ok():
             node.stop_turtle()
+
         node.destroy_node()
+
+        # 停车和节点清理完成后，再释放控制权
+        if lock_file is not None:
+            lock_file.close()
+
         if rclpy.ok():
             rclpy.shutdown()
