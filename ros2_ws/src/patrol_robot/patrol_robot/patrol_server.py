@@ -44,14 +44,8 @@ class PatrolServer(Node):
             10
         )
 
-        self.action_server = ActionServer(
-            self,
-            Patrol,
-            'patrol',
-            self.execute_callback,
-            cancel_callback=self.cancel_callback,
-        )
-        self.get_logger().info('巡逻节点已启动,等待任务')
+        self.action_server = None
+        self.get_logger().info('巡逻节点已启动，等待海龟位姿')
 
         self.control_timer = self.create_timer(
             0.05,
@@ -65,8 +59,19 @@ class PatrolServer(Node):
 
         if first_message:
             self.get_logger().info(
-                f'接收到turtlesim位姿信息: x={msg.x}, y={msg.y}, theta={msg.theta}'
+                f'收到海龟位姿：x={msg.x:.2f}, '
+                f'y={msg.y:.2f}, theta={msg.theta:.2f}'
             )
+
+            self.action_server = ActionServer(
+                self,
+                Patrol,
+                'patrol',
+                self.execute_callback,
+                cancel_callback=self.cancel_callback,
+            )
+
+            self.get_logger().info('巡逻服务已就绪，等待任务')
 
     def stop_turtle(self):
         stop_msg = Twist()
